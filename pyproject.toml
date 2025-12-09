@@ -1,0 +1,48 @@
+[project]
+name = "pifeed"
+version = "0.0.1"
+description = "Camera -> recorder + RTSP streaming pipeline"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE.md"]
+
+authors = [
+    {name = "Fawz-Haaroon", email = "fawzhaaroon216@gmail.com"},
+    {name = "akileshas", email = "akileshas.ai@gmail.com"},
+
+]
+maintainers = []
+dependencies = [
+  "numpy",
+  "Pillow",
+  "pygobject",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "pyright==1.1.407"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+
+[tool.pyright]
+include = ["pifeed"]
+exclude = ["tests", "refs"]
+typeCheckingMode = "basic"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["pifeed*"]
+exclude = ["refs*", "tests*"]
+
+
+
+
+
