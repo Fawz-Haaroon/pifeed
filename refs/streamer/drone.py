@@ -11,8 +11,8 @@ from multiprocessing import Process, Queue
 from queue import Empty
 from typing import Self
 
-from streamer.core import DroneConfig
-from streamer.workers import start_camera
+from scripts.core import DroneConfig
+from scripts.workers import start_camera
 
 
 type MessagePkt = dict[str, object]
@@ -44,7 +44,7 @@ class DroneController:
 
     def start(self: Self) -> None:
         self.config.setup_storage()
-        active = sum([self.config.video_mode, self.config.image_mode, self.config.rtsp_mode])
+        active = sum([self.config.stream_mode, self.config.video_mode, self.config.image_mode, self.config.rtsp_mode])  # type: ignore[arg-type]
         if active == 0:
             raise RuntimeError("no workers enabled")
         self.procs = start_camera(self.config, self.statq)
@@ -69,23 +69,6 @@ class DroneController:
 
                 except Empty:
                     pass
-
-
-                # watchdog (to self restart in case workers exit)
-                for p in list(self.procs):
-                    try:
-                        alive = p.is_alive()
-                    except Exception:
-                        alive = False
-                    if not alive:
-                        try:
-                            name = p.name
-                        except Exception:
-                            name = "worker"
-                        logger.warning(f"{name} exited; restarting pipelines")
-                        self._shutdown()
-                        self.procs = start_camera(self.config, self.statq)
-                        break
                 time.sleep(0.1)
 
         except KeyboardInterrupt:

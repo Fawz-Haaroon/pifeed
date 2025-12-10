@@ -1,29 +1,37 @@
 #!/usr/bin/env python3
-# Configuration for the streamer module
+# env var configuration management for DroneConfig
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Self
+from typing import Literal, Self
 
 
-Flag = bool
+type Flag = bool
+type IP = str
+type Port = int
+type TTL = int
+type CastType = Literal["unicast", "multicast", "broadcast"]
 
 
 class DroneConfig:
+
     def __init__(
         self: Self,
         *,
-        # enabled workers
-        video_mode: Flag = True,   
-        image_mode: Flag = True, 
-        rtsp_mode: Flag = True, 
+        stream_mode: Flag = True,
+        video_mode: Flag = True,
+        image_mode: Flag = True,
+        rtsp_mode: Flag = True,
 
-        # network / service
-        rtsp_port: int = 8554,
+        cast_type: CastType = "unicast",
+        target_ip: IP = "192.168.1.100",
+        multicast_ip: IP = "224.1.1.1",
+        port: Port = 5000,
+        rtsp_port: Port = 8554,
+        ttl: TTL = 16,
 
-        # camera / encoder
         camera_dev: str = "/dev/video0",
         video_bitrate: int = 2_000_000,
         video_fps: int = 30,
@@ -31,14 +39,21 @@ class DroneConfig:
         video_height: int = 720,
         image_quality: int = 95,
 
-        # storage
-        storage_path: str | Path = "/mnt/ssd",
+        storage_path: (str | Path) = "/mnt/ssd",
+
     ) -> None:
+
+        self.stream_mode: Flag = stream_mode
         self.video_mode: Flag = video_mode
         self.image_mode: Flag = image_mode
         self.rtsp_mode: Flag = rtsp_mode
 
-        self.rtsp_port: int = rtsp_port
+        self.cast_type: CastType = cast_type
+        self.target_ip: IP = target_ip
+        self.multicast_ip: IP = multicast_ip
+        self.port: Port = port
+        self.rtsp_port: Port = rtsp_port
+        self.ttl: TTL = ttl
 
         self.camera_dev: str = camera_dev
         self.video_bitrate: int = video_bitrate
@@ -52,6 +67,7 @@ class DroneConfig:
         self.archive_image: Path = self.storage_path / "drone_archive" / "images"
         self.temp_path: Path = self.storage_path / "drone_temp"
 
+
     @classmethod
     def from_env(cls: type[Self]) -> Self:
         def getb(k: str, d: Flag) -> Flag:
@@ -64,12 +80,21 @@ class DroneConfig:
             except Exception:
                 return d
 
+        v = os.getenv("CAST_TYPE", "unicast").lower()
+        ct: CastType = v if v in ("unicast", "multicast", "broadcast") else "unicast"
+
         return cls(
+            stream_mode=getb("ENABLE_STREAM", True),
             video_mode=getb("ENABLE_VIDEO", True),
             image_mode=getb("ENABLE_IMAGES", True),
             rtsp_mode=getb("ENABLE_RTSP", True),
 
+            cast_type=ct,
+            target_ip=os.getenv("TARGET_IP", "192.168.1.100"),
+            multicast_ip=os.getenv("MULTICAST_IP", "224.1.1.1"),
+            port=geti("PORT", 5000),
             rtsp_port=geti("RTSP_PORT", 8554),
+            ttl=geti("TTL", 16),
 
             camera_dev=os.getenv("CAMERA", "/dev/video0"),
             video_bitrate=geti("VIDEO_BITRATE", 2_000_000),
@@ -81,12 +106,28 @@ class DroneConfig:
             storage_path=os.getenv("SSD_PATH", "/mnt/ssd"),
         )
 
+
+    def get_stream_target(self: Self) -> IP:
+        return {
+            "broadcast": "255.255.255.255",
+            "multicast": self.multicast_ip,
+        }.get(self.cast_type, self.target_ip)
+
+
     def setup_storage(self: Self) -> None:
         for p in (self.archive_video, self.archive_image, self.temp_path):
             p.mkdir(parents=True, exist_ok=True)
 
+
     def __str__(self: Self) -> str:
         return (
-            f"StreamerConfig: video={self.video_mode}, images={self.image_mode}, rtsp={self.rtsp_mode}, "
-            f"rtsp_port={self.rtsp_port}, storage={self.storage_path}"
+            f"DroneConfig:stream={self.stream_mode}, "
+            f"video={self.video_mode}, "
+            f"images={self.image_mode}, "
+            f"rtsp={self.rtsp_mode}, "
+            f"cast={self.cast_type}, "
+            f"target={self.get_stream_target()}:{self.port}, "
+            f"rtsp_port={self.rtsp_port}, "
+            f"storage={self.storage_path}"
         )
+

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# Two pipelines via SHM: feeder to (recorder | rtsp stream).
+# Two pipelines via SHM: feeder to (recorder | rtp/udp streame |rtsp stream).
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ gi.require_version("Gst", "1.0")
 gi.require_version("GstRtspServer", "1.0")
 from gi.repository import Gst, GLib, GstRtspServer
 
-from streamer.core import DroneConfig
+from scripts.core import DroneConfig
 
 Gst.init(None)
 
@@ -306,6 +306,93 @@ class RecorderWorker:
             self.loop.quit()
 
 
+# Main Streamer Pipeline (RTP/UDP)
+class StreamWorker:
+    def __init__(self: Self, config: DroneConfig, statq: (MessageQueue | None) = None) -> None:
+        self.config = config
+        self.statq = statq
+        self.pipeline: (Gst.Pipeline | None) = None
+        self.loop: (GLib.MainLoop | None) = None
+
+    def _mkpipe(self: Self) -> Gst.Pipeline:
+        target = self.config.get_stream_target()
+        mcast = ""
+        if self.config.cast_type == "multicast":
+            mcast = f"auto-multicast=true ttl={self.config.ttl}"
+        elif self.config.cast_type == "broadcast":
+            mcast = "broadcast=true"
+
+        rtp_port = int(self.config.port)
+        rtcp_port_tx = rtp_port + 1
+        rtcp_port_rx = rtp_port + 5
+
+        elements = f"""
+        rtpbin name=rtpbin
+
+        shmsrc socket-path={SHM_STR} is-live=true do-timestamp=true
+        ! queue leaky=downstream max-size-buffers=0 max-size-time=0 max-size-bytes=0
+        ! video/x-raw,format=I420,width={self.config.video_width},height={self.config.video_height},framerate={self.config.video_fps}/1
+        ! x264enc threads=1 bitrate={self.config.video_bitrate // 1000} tune=zerolatency speed-preset=ultrafast key-int-max={self.config.video_fps} pass=cbr
+        ! video/x-h264,profile=baseline
+        ! h264parse config-interval=1
+        ! rtph264pay pt=96 mtu=1400
+        ! rtpbin.send_rtp_sink_0
+
+        rtpbin.send_rtp_src_0
+        ! udpsink host={target} port={rtp_port} sync=false async=false {mcast}
+
+        udpsrc port={rtcp_port_rx}
+        ! rtpbin.recv_rtcp_sink_0
+
+        rtpbin.send_rtcp_src_0
+        ! udpsink host={target} port={rtcp_port_tx} sync=false async=false {mcast}
+        """
+
+        p = Gst.parse_launch(elements)
+        bus = p.get_bus()
+        bus.add_signal_watch()
+        bus.connect("message", self._busmsg)
+        return p
+
+    def _busmsg(self: Self, _bus, msg) -> None:
+        if msg.type in (Gst.MessageType.EOS, Gst.MessageType.ERROR):
+            if self.loop:
+                self.loop.quit()
+
+    def run(self: Self) -> None:
+        try:
+            for _ in range(100):
+                if os.path.exists(SHM_STR):
+                    break
+                time.sleep(0.05)
+            else:
+                raise RuntimeError(f"SHM socket {SHM_STR} never appeared")
+
+            self.pipeline = self._mkpipe()
+            self.loop = GLib.MainLoop()
+            if self.pipeline.set_state(Gst.State.PLAYING) == Gst.StateChangeReturn.FAILURE:
+                raise RuntimeError("stream pipeline failed")
+            if self.statq:
+                try:
+                    self.statq.put_nowait({"worker": "stream", "status": "stream started"})
+                except Exception:
+                    pass
+            self.loop.run()
+        except Exception:
+            pass
+        finally:
+            if self.pipeline:
+                self.pipeline.set_state(Gst.State.NULL)
+
+    def stop(self: Self) -> None:
+        try:
+            if self.pipeline:
+                self.pipeline.send_event(Gst.Event.new_eos())
+            time.sleep(0.5)
+        except Exception:
+            pass
+        if self.loop:
+            self.loop.quit()
 
 
 #  stream through RTSP
@@ -318,27 +405,16 @@ class RTSPWorker:
 
     def _make_factory(self: Self) -> GstRtspServer.RTSPMediaFactory:
         factory = GstRtspServer.RTSPMediaFactory()
-
         launch_str = f"""
         ( shmsrc socket-path={SHM_STR} is-live=true do-timestamp=true
-          ! queue leaky=downstream max-size-buffers=0 max-size-time=0 max-size-bytes=0
           ! video/x-raw,format=I420,width={self.config.video_width},height={self.config.video_height},framerate={self.config.video_fps}/1
-          ! x264enc threads=1 tune=zerolatency speed-preset=ultrafast key-int-max={self.config.video_fps} pass=cbr rc-lookahead=0 bframes=0 b-adapt=false byte-stream=true bitrate={self.config.video_bitrate // 1000}
-          ! video/x-h264,profile=baseline,stream-format=byte-stream,alignment=au
-          ! h264parse config-interval=1 disable-passthrough=true
-          ! rtph264pay name=pay0 pt=96 mtu=1400 )
+          ! x264enc threads=2 bitrate={self.config.video_bitrate // 1000} tune=zerolatency speed-preset=ultrafast key-int-max={self.config.video_fps} pass=cbr
+          ! video/x-h264,profile=baseline
+          ! h264parse config-interval=1
+          ! rtph264pay name=pay0 pt=96 )
         """
         factory.set_launch(launch_str)
         factory.set_shared(True)
-
-        try:
-            factory.set_latency(50)
-        except Exception:
-            pass
-        try:
-            factory.set_suspend_mode(GstRtspServer.RTSPSuspendMode.NONE)
-        except Exception:
-            pass
         return factory
 
     def run(self: Self) -> None:
@@ -389,16 +465,22 @@ def start_camera(config: DroneConfig, statq: (MessageQueue | None) = None) -> li
         w = RecorderWorker(config, statq)
         w.run()
 
+    def stream_main() -> None:
+        w = StreamWorker(config, statq)
+        w.run()
 
     def rtsp_main() -> None:
         w = RTSPWorker(config, statq)
         w.run()
 
-    if any([config.video_mode, config.image_mode, config.rtsp_mode]):
+    if any([config.video_mode, config.image_mode, config.stream_mode, config.rtsp_mode]):
         procs.append(_spawn(feeder_main, "camera_feeder"))
 
     if config.video_mode or config.image_mode:
         procs.append(_spawn(recorder_main, "recorder_worker"))
+
+    if config.stream_mode:
+        procs.append(_spawn(stream_main, "stream_worker"))
 
     if config.rtsp_mode:
         procs.append(_spawn(rtsp_main, "rtsp_worker"))
