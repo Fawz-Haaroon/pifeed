@@ -70,7 +70,7 @@ class DroneController:
                 except Empty:
                     pass
 
-
+# TODO: Refactor watchdog to accept induced shutdown and not restart unless its an unexpected crash
                 # watchdog (to self restart in case workers exit)
                 for p in list(self.procs):
                     try:

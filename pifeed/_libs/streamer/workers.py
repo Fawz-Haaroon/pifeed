@@ -108,7 +108,7 @@ class CameraFeeder:
             self.loop.quit()
 
 
-# Main recorder pipeline dealing with capturing > 5s vid chunk | 1fps image frames
+# Main recorder pipeline dealing with capturing >>> 5s vid chunk | 1fps image frames
 class RecorderWorker:
     def __init__(self: Self, config: DroneConfig, statq: (MessageQueue | None) = None) -> None:
         self.config = config
